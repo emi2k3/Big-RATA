@@ -1,0 +1,155 @@
+from datetime import datetime, timedelta
+from airflow import DAG
+from airflow.operators.python import PythonOperator
+from pyspark.sql import SparkSession
+
+
+import os
+# Configuración por defecto del DAG
+default_args = {
+    'owner': 'equipo2',
+    'depends_on_past': False,
+    'email_on_failure': False,
+    'email_on_retry': False,
+    'retries': 1,
+    'retry_delay': timedelta(minutes=5),
+}
+
+#Sesion spark
+_spark_session = None
+
+def get_spark_session():
+    """Singleton para SparkSession"""
+    global _spark_session
+    if _spark_session is None:
+        _spark_session = SparkSession.builder \
+            .appName("ETL_Airflow") \
+            .master("local[*]") \
+            .config("spark.driver.memory", "2g") \
+            .config("spark.executor.memory", "2g") \
+            .getOrCreate()
+    return _spark_session
+
+#Rutas de archivos
+
+BASE_DIR = '/opt/airflow'  # Directorio base dentro del contenedor
+INPUT_FILE = os.path.join(BASE_DIR, 'encparticipantes_ep_2024.csv')
+OUTPUT_DIR = os.path.join(BASE_DIR, 'output')
+OUTPUT_FILE = os.path.join(OUTPUT_DIR, 'datos_filtrados.csv')
+
+
+def extract_data(**context):
+    """
+    Lee el archivo CSV de entrada y guarda los datos en XCom
+    """# Crear sesión de Spark     
+        # Leer datos
+    spark = get_spark_session()
+    df = spark.read.csv(
+            INPUT_FILE,
+            header=True,
+            inferSchema=True
+        )
+    temp_path = "/opt/airflow/temp/datos_raw.parquet"
+    df.write.mode("overwrite").parquet(temp_path)
+    
+    #Pasamos la ruta del archivo Parquet
+    context['ti'].xcom_push(key='ruta_datos_raw', value=temp_path)
+
+    return "Extracción completada"
+
+def transform_with_pyspark(**context):
+    """
+    Tarea de transformación usando PySpark
+    """
+        # Obtener el data frrame
+
+    spark = get_spark_session()
+    temp_path = context['ti'].xcom_pull(task_ids='extract', key='ruta_datos_raw')
+    df = spark.read.parquet(temp_path)
+
+        # Realizar transformaciones
+    df_transformed = df \
+        .groupBy("BARRIO_MONTEVIDEO").count()
+
+    temp_path = "/opt/airflow/temp/datos_transformados.parquet"
+    df_transformed.write.mode("overwrite").parquet(temp_path)
+    print("Datos transformados:")
+    df_transformed.show()
+        
+        # Guardar resultados
+    context['ti'].xcom_push(key='ruta_datos_transformados', value=temp_path)
+    print("Sesión de Spark cerrada")
+
+        
+    return OUTPUT_DIR
+        
+        
+
+def load_data(**context):
+    """
+    Carga los datos transformados al outputdir
+    """
+    spark = get_spark_session()
+    temp_path = context['ti'].xcom_pull(task_ids='transform', key='ruta_datos_transformados')
+    df_transformed = spark.read.parquet(temp_path)
+    
+    
+    df_transformed.write \
+            .mode("overwrite") \
+            .option("header", "true") \
+            .csv(OUTPUT_DIR)
+    spark.stop()
+    print(f"Datos guardados en: {OUTPUT_DIR}")
+
+def cleanup_parquet_files(**context):
+    """
+    Limpia todos los archivos temporales generados por los DAGS
+    """
+    import shutil
+    spark = get_spark_session()
+    path_raw = context['ti'].xcom_pull(task_ids='extract', key='ruta_datos_raw')
+    path_transformed = context['ti'].xcom_pull(task_ids='transform', key='ruta_datos_transformados')
+
+    for path in [path_raw,path_transformed]:
+        if path and os.path.exists(path):
+            shutil.rmtree(path)
+    spark.stop()
+
+
+# Definir el DAG
+with DAG(
+    'pyspark_etl_barrios',
+    default_args=default_args,
+    description='Extracción de crimenes por barrios.',
+    schedule_interval=timedelta(days=1),
+    start_date=datetime(2024, 1, 1),
+    catchup=False,
+    tags=['pyspark', 'etl', 'example'],
+) as dag:
+    
+    # Tarea 1: Extracción
+    extract_task = PythonOperator(
+        task_id='extract',
+        python_callable=extract_data,
+    )
+    
+    # Tarea 2: Transformación con PySpark
+    transform_task = PythonOperator(
+        task_id='transform',
+        python_callable=transform_with_pyspark,
+    )
+    
+    # Tarea 3: Carga
+    load_task = PythonOperator(
+        task_id='load',
+        python_callable=load_data,
+    )
+
+    cleanup_task = PythonOperator(
+        task_id='clean',
+        python_callable=cleanup_parquet_files,
+    )
+    
+    # Definir dependencias
+    extract_task >> transform_task >> load_task >> cleanup_task
+
