@@ -33,7 +33,7 @@ def get_spark_session():
 #Rutas de archivos
 
 BASE_DIR = '/opt/airflow'  # Directorio base dentro del contenedor
-INPUT_FILE = os.path.join(BASE_DIR, 'encparticipantes_ep_2024.csv')
+INPUT_FILE = os.path.join(BASE_DIR, 'data', 'otros-delitos.csv')
 OUTPUT_DIR = os.path.join(BASE_DIR, 'output')
 OUTPUT_FILE = os.path.join(OUTPUT_DIR, 'datos_filtrados.csv')
 
@@ -41,14 +41,26 @@ OUTPUT_FILE = os.path.join(OUTPUT_DIR, 'datos_filtrados.csv')
 def extract_data(**context):
     """
     Lee el archivo CSV de entrada y guarda los datos en XCom
-    """# Crear sesión de Spark     
-        # Leer datos
+    """
+    # Crear sesión de Spark     
     spark = get_spark_session()
+
+    # Leer datos con separador correcto y codificación
     df = spark.read.csv(
-            INPUT_FILE,
-            header=True,
-            inferSchema=True
-        )
+        INPUT_FILE,
+        header=True,
+        sep=';',                 
+        inferSchema=True,
+        encoding='UTF-8',        
+        quote='"',
+        escape='\\'
+    )
+
+    # Limpiar nombres de columnas: quitar BOM, comillas y espacios extra
+    clean_cols = [c.strip().strip('"').replace('\ufeff', '') for c in df.columns]
+    df = df.toDF(*clean_cols)
+
+
     temp_path = "/opt/airflow/temp/datos_raw.parquet"
     df.write.mode("overwrite").parquet(temp_path)
     
@@ -66,7 +78,9 @@ def transform_with_pyspark(**context):
     spark = get_spark_session()
     temp_path = context['ti'].xcom_pull(task_ids='extract', key='ruta_datos_raw')
     df = spark.read.parquet(temp_path)
-
+    print("--- Esquema del DataFrame RAW (IMPORTANTE para debugging) ---")
+    df.printSchema()
+    print("------------------------------------------------------------")
         # Realizar transformaciones
     df_transformed = df \
         .groupBy("BARRIO_MONTEVIDEO").count()
@@ -89,6 +103,11 @@ def load_data(**context):
     """
     Carga los datos transformados al outputdir
     """
+    
+
+    # Crear el directorio de salida
+    os.makedirs(OUTPUT_DIR, exist_ok=True)
+    
     spark = get_spark_session()
     temp_path = context['ti'].xcom_pull(task_ids='transform', key='ruta_datos_transformados')
     df_transformed = spark.read.parquet(temp_path)
@@ -121,7 +140,6 @@ with DAG(
     'pyspark_etl_barrios',
     default_args=default_args,
     description='Extracción de crimenes por barrios.',
-    schedule_interval=timedelta(days=1),
     start_date=datetime(2024, 1, 1),
     catchup=False,
     tags=['pyspark', 'etl', 'example'],
