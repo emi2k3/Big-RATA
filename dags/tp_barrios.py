@@ -2,7 +2,7 @@ from datetime import datetime, timedelta
 from airflow import DAG
 from airflow.operators.python import PythonOperator
 from pyspark.sql import SparkSession
-import shutil
+from pyspark.sql.functions import col, avg,count, count_if
 
 import os
 # Configuración por defecto del DAG
@@ -81,12 +81,14 @@ def transform_with_pyspark(**context):
     spark = get_spark_session()
     temp_path = context['ti'].xcom_pull(task_ids='extract', key='ruta_datos_raw')
     df = spark.read.parquet(temp_path)
-    print("--- Esquema del DataFrame RAW (IMPORTANTE para debugging) ---")
-    df.printSchema()
-    print("------------------------------------------------------------")
+
         # Realizar transformaciones
     df_transformed = df \
-        .groupBy("BARRIO_MONTEVIDEO").count()
+        .groupBy("BARRIO_MONTEVIDEO","MES","AÑO","DELITO","JURISDICCION").agg(
+            count_if(col("TENTATIVA")=="SI").alias("Tentativa_SI"),
+            count_if(col("TENTATIVA")=="NO").alias("Tentativa_NO"),
+            count("*").alias("Cantidad_Crimenes"),
+        )
 
     temp_path = "/opt/airflow/temp/datos_transformados.parquet"
     df_transformed.write.mode("overwrite").parquet(temp_path)
@@ -143,7 +145,8 @@ def cleanup_parquet_files(**context):
 with DAG(
     'pyspark_etl_barrios',
     default_args=default_args,
-    description='Extracción de crimenes por barrios.',
+    description='''Cuenta la catidad total de crimenes junto con las tentativas y no
+    tentativas agrupado por tipo de crimen, mes, barrio, jurisdicción y tipo de victima. ''',
     start_date=datetime(2024, 1, 1),
     catchup=False,
     tags=['pyspark', 'etl', 'example'],
