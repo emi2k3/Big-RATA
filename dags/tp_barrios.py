@@ -2,7 +2,7 @@ from datetime import datetime, timedelta
 from airflow import DAG
 from airflow.operators.python import PythonOperator
 from pyspark.sql import SparkSession
-
+import shutil
 
 import os
 # Configuración por defecto del DAG
@@ -23,11 +23,14 @@ def get_spark_session():
     global _spark_session
     if _spark_session is None:
         _spark_session = SparkSession.builder \
-            .appName("ETL_Airflow") \
-            .master("local[*]") \
-            .config("spark.driver.memory", "2g") \
-            .config("spark.executor.memory", "2g") \
-            .getOrCreate()
+        .appName("ETL_Process") \
+        .config("spark.hadoop.fs.permissions.umask-mode", "000") \
+        .config("spark.hadoop.fs.file.impl", "org.apache.hadoop.fs.LocalFileSystem") \
+        .getOrCreate()
+    
+    # Configurar permisos en Hadoop
+    _spark_session.sparkContext._jsc.hadoopConfiguration().set("fs.permissions.umask-mode", "000")
+    
     return _spark_session
 
 #Rutas de archivos
@@ -112,13 +115,14 @@ def load_data(**context):
     temp_path = context['ti'].xcom_pull(task_ids='transform', key='ruta_datos_transformados')
     df_transformed = spark.read.parquet(temp_path)
     
-    
+    output_path = os.path.join(OUTPUT_DIR, 'csv_output')
+
     df_transformed.write \
             .mode("overwrite") \
             .option("header", "true") \
-            .csv(OUTPUT_DIR)
+            .csv(output_path)
     spark.stop()
-    print(f"Datos guardados en: {OUTPUT_DIR}")
+    print(f"Datos guardados en: {output_path}")
 
 def cleanup_parquet_files(**context):
     """
