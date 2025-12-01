@@ -1,3 +1,10 @@
 otros-delitos.csv
 /logs
 /output
+
+# Datalake zones - ignore data files but keep structure
+/datalake/landing/*.csv
+/datalake/landing/*.parquet
+/datalake/raw/*
+/datalake/refined/*
+/datalake/temp/*
