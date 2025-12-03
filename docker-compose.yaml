@@ -80,6 +80,7 @@ x-airflow-common: &airflow-common
     - ${AIRFLOW_PROJ_DIR:-.}/config:/opt/airflow/config
     - ${AIRFLOW_PROJ_DIR:-.}/plugins:/opt/airflow/plugins
     - ${AIRFLOW_PROJ_DIR:-.}/data:/opt/airflow/data
+    - ${AIRFLOW_PROJ_DIR:-.}/datalake:/opt/airflow/datalake
     - ${AIRFLOW_PROJ_DIR:-.}/output:/opt/airflow/output
   user: "${AIRFLOW_UID:-50000}:0"
   depends_on: &airflow-common-depends-on
@@ -121,12 +122,18 @@ services:
   pyspark:
     image: jupyter/pyspark-notebook:latest
     container_name: pyspark_lab
+    command: start-notebook.sh --NotebookApp.token='' --NotebookApp.password=''
     ports:
       - "8888:8888"
     volumes:
       - ${AIRFLOW_PROJ_DIR:-.}/data:/home/jovyan/data
+      - ${AIRFLOW_PROJ_DIR:-.}/notebooks:/home/jovyan/notebooks
+      - ${AIRFLOW_PROJ_DIR:-.}/output:/home/jovyan/output
+      - ${AIRFLOW_PROJ_DIR:-.}/datalake:/home/jovyan/datalake
     environment:
       - PYSPARK_PYTHON=python3
+      - JUPYTER_ENABLE_LAB=yes
+      - JUPYTER_TOKEN=''
     networks:
       - default
 
